@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -6,19 +8,26 @@ from app.models.user import User
 from app.schemas.user import UserCreate
 from app.schemas.auth import UserLogin, TokenResponse
 
+logger = logging.getLogger(__name__)
+
 
 def register_user(db: Session, payload: UserCreate) -> TokenResponse:
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
-    user = User(
-        email=payload.email,
-        password_hash=hash_password(payload.password),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    try:
+        user = User(
+            email=payload.email,
+            password_hash=hash_password(payload.password),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to register user: %s", e, exc_info=True)
+        raise
 
     token = create_access_token({"sub": str(user.id)})
     return TokenResponse(access_token=token)

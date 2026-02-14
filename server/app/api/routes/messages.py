@@ -1,3 +1,4 @@
+import logging
 from typing import List
 from uuid import UUID
 
@@ -9,6 +10,8 @@ from app.models.user import User
 from app.models.chat import Chat
 from app.models.message import Message
 from app.schemas.message import MessageCreate, MessageResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chats/{chat_id}/messages", tags=["messages"])
 
@@ -29,29 +32,35 @@ def send_message(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _verify_chat_ownership(chat_id, current_user, db)
+    try:
+        _verify_chat_ownership(chat_id, current_user, db)
 
-    # Store user message
-    user_msg = Message(
-        chat_id=chat_id,
-        user_id=current_user.id,
-        role="user",
-        content=payload.content,
-    )
-    db.add(user_msg)
+        # Store user message and assistant reply in a single transaction
+        user_msg = Message(
+            chat_id=chat_id,
+            user_id=current_user.id,
+            role="user",
+            content=payload.content,
+        )
+        db.add(user_msg)
 
-    # Create assistant placeholder response
-    assistant_msg = Message(
-        chat_id=chat_id,
-        user_id=current_user.id,
-        role="assistant",
-        content="Message received",
-    )
-    db.add(assistant_msg)
+        assistant_msg = Message(
+            chat_id=chat_id,
+            user_id=current_user.id,
+            role="assistant",
+            content="Message received",
+        )
+        db.add(assistant_msg)
 
-    db.commit()
-    db.refresh(assistant_msg)
-    return assistant_msg
+        db.commit()
+        db.refresh(assistant_msg)
+        return assistant_msg
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to send message: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("", response_model=List[MessageResponse])
@@ -60,5 +69,11 @@ def list_messages(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _verify_chat_ownership(chat_id, current_user, db)
-    return db.query(Message).filter(Message.chat_id == chat_id).order_by(Message.created_at.asc()).all()
+    try:
+        _verify_chat_ownership(chat_id, current_user, db)
+        return db.query(Message).filter(Message.chat_id == chat_id).order_by(Message.created_at.asc()).all()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to list messages: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
